@@ -156,7 +156,7 @@ def main():
             x_t=xt_list[diffusion.num_timesteps-i-1]
             t=th.tensor([i] * g_shape[0], device=dist_util.dev())
             if t not in error_over_time.keys():
-                error_over_time[t]=[]
+                error_over_time[int(t[0].cpu())]=[]
             p_t=classifier(x_t,diffusion._scale_timesteps(t)) #这里diffusion._scale_timesteps(t)=t
             p_t=th.nn.functional.softmax(p_t, dim=-1)
             
@@ -188,7 +188,7 @@ def main():
             with th.no_grad():
                 error=th.nn.functional.l1_loss(eps_null,mean_eps_c)
             error_over_time[int(t[0].cpu())].append(error.cpu())
-      
+            print('error:',error)
               
     print(error_over_time)
     axis_x=[]
