@@ -17,7 +17,8 @@ cond:
 
 .PHONY : calc_diff
 calc_diff:
-	python  calc_diff.py --classifier_scale 10.0 --classifier_path 256x256_classifier.pt --cond_model_path 256x256_diffusion.pt --uncond_model_path 256x256_diffusion_uncond.pt --attention_resolutions 32,16,8 --diffusion_steps 1000 --image_size 256 --learn_sigma True --noise_schedule linear --num_channels 256 --num_head_channels 64 --num_res_blocks 2 --resblock_updown True --use_fp16 True --use_scale_shift_norm True --batch_size 4 --num_samples 100 --timestep_respacing 50
+# --classifier_scale 10.0 没用到
+	python  calc_diff.py --classifier_path 256x256_classifier.pt --cond_model_path 256x256_diffusion.pt --uncond_model_path 256x256_diffusion_uncond.pt --attention_resolutions 32,16,8 --diffusion_steps 1000 --image_size 256 --learn_sigma True --noise_schedule linear --num_channels 256 --num_head_channels 64 --num_res_blocks 2 --resblock_updown True --use_fp16 True --use_scale_shift_norm True --batch_size 4 --num_samples 100 --timestep_respacing 50
 
 .PHONY : debug_calc_diff
 debug_calc_diff:
