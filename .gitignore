@@ -7,3 +7,4 @@ modified_by_hz/
 evaluations/classify_image_graph_def.pb
 *.png
 *.jpg
+openai/
