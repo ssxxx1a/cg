@@ -5,6 +5,7 @@ import numpy as np
 import torch as th
 import torch.distributed as dist
 import torch.nn.functional as F
+import matplotlib.pyplot as plt
 
 from guided_diffusion import dist_util, logger
 from guided_diffusion.script_util import (
@@ -19,9 +20,13 @@ from guided_diffusion.script_util import (
 )
 
 def create_argparser():
+    '''
+    计算差值用到的参数
+    '''
     calc_args=dict(
         n_samples_per_time=1,
         num_classes=1000,
+        interval=100,
     )
     defaults = dict(
         clip_denoised=True,
@@ -50,6 +55,32 @@ def model_load_state_dict(model,model_path,use_fp16):
         model.convert_to_fp16()
     model.eval()
     return model
+def sample_fn_return_xt_list_by_psample(
+        diffusion,
+        model,
+        shape,
+        noise=None,
+        clip_denoised=True,
+        denoised_fn=None,
+        cond_fn=None,
+        model_kwargs=None,
+        device=None,
+        progress=False,
+    ):
+        xt_list = []
+        for sample in diffusion.p_sample_loop_progressive(
+            model,
+            shape,
+            noise=noise,
+            clip_denoised=clip_denoised,
+            denoised_fn=denoised_fn,
+            cond_fn=cond_fn,
+            model_kwargs=model_kwargs,
+            device=device,
+            progress=progress,
+        ):
+            xt_list.append(sample['sample'])
+        return xt_list
 def convert_x_t_to_images_for_vaild(x_t,name='test.png'):
     import cv2
     img=(x_t[0]*127.5)+127.5
@@ -96,32 +127,10 @@ def main():
     def uncond_model_fn(x, t, y=None):
         assert y is not None
         return uncond_model(x, t, None)
-    def sample_fn_return_xt_list_by_psample(
-        model,
-        shape,
-        noise=None,
-        clip_denoised=True,
-        denoised_fn=None,
-        cond_fn=None,
-        model_kwargs=None,
-        device=None,
-        progress=False,
-    ):
-        xt_list = []
-        for sample in diffusion.p_sample_loop_progressive(
-            model,
-            shape,
-            noise=noise,
-            clip_denoised=clip_denoised,
-            denoised_fn=denoised_fn,
-            cond_fn=cond_fn,
-            model_kwargs=model_kwargs,
-            device=device,
-            progress=progress,
-        ):
-            xt_list.append(sample['sample'])
-        return xt_list
         
+    b,c,h,w=1,3,256,256
+    g_shape = (b,c,h,w)
+    error_over_time={}
     for i in range(args.n_samples_per_time):
         c=i%args.num_classes
         print('run {} sample. used c is {} '.format(i,c))
@@ -129,17 +138,74 @@ def main():
         model_kwargs["y"] = th.tensor([c], dtype=th.long, device=dist_util.dev()).view(1,)
         
         #使用uncond的方法进行采样,得到Xt->X0的全部过程.
+        #即只和时间有关系，计算eps(x, NULL)中的 x_T ~ x_0
+        
         xt_list=sample_fn_return_xt_list_by_psample(
+            diffusion,
             uncond_model_fn,
             (1, 3, 256, 256),
             clip_denoised=args.clip_denoised,
             model_kwargs=model_kwargs,
-            cond_fn=None, #对应
+            cond_fn=None,    #对应 eps(x, NULL)
             device=dist_util.dev(),
         )
-        print(len(xt_list))
-        convert_x_t_to_images_for_vaild(xt_list[0],name='test2_{}.png'.format('0'))
-        convert_x_t_to_images_for_vaild(xt_list[-1],name='test2_{}.png'.format('-1'))
+        # copy from openai. GaussianDiffusion.p_sample_loop_progressive: line 544
+        indices = list(range(diffusion.num_timesteps))[::-1] #T,T-1,...,1,0
+        for i in indices:
+            
+            x_t=xt_list[diffusion.num_timesteps-i-1]
+            t=th.tensor([i] * g_shape[0], device=dist_util.dev())
+            if t not in error_over_time.keys():
+                error_over_time[t]=[]
+            p_t=classifier(x_t,diffusion._scale_timesteps(t)) #这里diffusion._scale_timesteps(t)=t
+            p_t=th.nn.functional.softmax(p_t, dim=-1)
+            
+            '''
+            这里不太清楚,是用哪个模型? 
+            暂时写作:
+            eps(x|NULL)=uncond_model(x_t,t,None) # uncond_model: 256x256_diffusion_uncond.pt
+            '''
+            with th.no_grad():
+                eps_null=uncond_model(x_t,t,None)
+            mean_eps_c=th.zeros_like(eps_null)
+            interval=args.interval
+            #为了加速，将全部数据叠加在bs上，然后一次性计算
+            x_t=x_t.repeat(interval,1,1,1)
+            t=t.repeat(interval).view(-1)
+            for c_i in range(args.num_classes//interval):
+                assert args.num_classes%interval==0
+
+                model_kwargs["y"] =th.arange(interval*c_i,interval*(c_i+1),dtype=th.long, device=dist_util.dev()).view(-1)
+                '''
+                这里也不太明白,是用哪个模型? 
+                暂时写作:
+                eps(x|c)=cond_model(x_t,t,y) # cond_model: 256x256_diffusion.pt
+                '''
+                with th.no_grad():
+                    eps_c=cond_model(x_t,t,**model_kwargs)
+                score=p_t[0][interval*c_i:interval*(c_i+1)].view(interval,1,1,1)
+                mean_eps_c+=th.sum(eps_c*score,dim=0)
+            with th.no_grad():
+                error=th.nn.functional.l1_loss(eps_null,mean_eps_c)
+            error_over_time[int(t[0].cpu())].append(error.cpu())
+      
+              
+    print(error_over_time)
+    axis_x=[]
+    axis_y=[]
+    for t,errors in error_over_time.items():
+        axis_x.append(int(t))
+        axis_y.append(np.mean(errors))
+        #y_error_bar=np.std(errors)
+    plt.plot(axis_x,axis_y)
+    plt.gca().invert_xaxis()
+    
+    
+    plt.savefig('test.png')
+        # print(len(xt_list))
+        # convert_x_t_to_images_for_vaild(xt_list[0],name='test2_{}.png'.format('0'))
+        # convert_x_t_to_images_for_vaild(xt_list[-1],name='test2_{}.png'.format('-1'))
+        
         
         
         
