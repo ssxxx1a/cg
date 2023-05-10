@@ -139,7 +139,18 @@ def main():
         
         #使用uncond的方法进行采样,得到Xt->X0的全部过程.
         #即只和时间有关系，计算eps(x, NULL)中的 x_T ~ x_0
+        '''
+        这部分来得到x0~X_T 是通过计算eps(x, NULL)吗？不太确定。
+        p_sample.pdf 里面写到：
+        x_0_to_T=gd.sample(c,cond_scale=0)
+        ->
+        cfg: 
+        model(x_t,t,null)+cond_scale*(model(x,t,c)-model(x,t,null))
+        =model(x_t,t,null)
         
+        所以暂时写做:
+        x0~X_T = uncond_model(x_t, t, y=None)# uncond_model: 256x256_diffusion_uncond.pt
+        '''
         xt_list=sample_fn_return_xt_list_by_psample(
             diffusion,
             uncond_model_fn,
